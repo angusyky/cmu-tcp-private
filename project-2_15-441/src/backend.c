@@ -24,6 +24,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <time.h>
 
 #include "cmu_packet.h"
 #include "cmu_tcp.h"
@@ -55,35 +56,100 @@ int has_been_acked(cmu_socket_t *sock, uint32_t seq) {
  */
 void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
   cmu_tcp_header_t *hdr = (cmu_tcp_header_t *)pkt;
-  uint8_t flags = get_flags(hdr);
+  uint8_t recv_flags = get_flags(hdr);
 
-  switch (flags) {
-    case ACK_FLAG_MASK: {
-      uint32_t ack = get_ack(hdr);
-      if (after(ack, sock->window.last_ack_received)) {
-        sock->window.last_ack_received = ack;
-      }
-      break;
-    }
-    default: {
+  switch (recv_flags) {
+    case SYN_FLAG_MASK: {
+      // Listener responds using SYN-ACK with seq/y = rand() and ack = x + 1
       socklen_t conn_len = sizeof(sock->conn);
+      sock->window.next_seq_expected = get_seq(hdr) + 1;
+      struct timespec nanos;
+      clock_gettime(CLOCK_MONOTONIC, &nanos);
+      srand(nanos.tv_nsec);
+      sock->window.last_ack_received = rand();
+
+      uint16_t src = sock->my_port;
+      uint16_t dst = ntohs(sock->conn.sin_port);
       uint32_t seq = sock->window.last_ack_received;
-
-      // No payload.
-      uint8_t *payload = NULL;
+      uint32_t ack = sock->window.next_seq_expected;
+      uint16_t hlen = sizeof(cmu_tcp_header_t);
+      uint16_t plen = hlen;
+      uint8_t flags = ACK_FLAG_MASK | SYN_FLAG_MASK;
+      uint16_t adv_window = 1;
       uint16_t payload_len = 0;
-
-      // No extension.
+      uint8_t *payload = NULL;
       uint16_t ext_len = 0;
       uint8_t *ext_data = NULL;
+      uint8_t *response_packet =
+          create_packet(src, dst, seq, ack, hlen, plen, flags, adv_window,
+                        ext_len, ext_data, payload, payload_len);
+
+      sendto(sock->socket, response_packet, plen, 0,
+             (struct sockaddr *)&(sock->conn), conn_len);
+      free(response_packet);
+      break;
+    }
+
+    case (SYN_FLAG_MASK | ACK_FLAG_MASK): {
+      // Initiator records last ack received by Listener
+      uint32_t recv_ack = get_ack(hdr);
+      if (after(recv_ack, sock->window.last_ack_received)) {
+        sock->window.last_ack_received = recv_ack;
+      }
+
+      // Initiator responds using ACK with ack = y + 1
+      socklen_t conn_len = sizeof(sock->conn);
+      sock->window.next_seq_expected = get_seq(hdr) + 1;
+
+      uint16_t src = sock->my_port;
+      uint16_t dst = ntohs(sock->conn.sin_port);
+      uint32_t seq = sock->window.last_ack_received;
+      uint32_t ack = sock->window.next_seq_expected;
+      uint16_t hlen = sizeof(cmu_tcp_header_t);
+      uint16_t plen = hlen;
+      uint8_t flags = ACK_FLAG_MASK;
+      uint16_t adv_window = 1;
+      uint16_t payload_len = 0;
+      uint8_t *payload = NULL;
+      uint16_t ext_len = 0;
+      uint8_t *ext_data = NULL;
+      uint8_t *response_packet =
+          create_packet(src, dst, seq, ack, hlen, plen, flags, adv_window,
+                        ext_len, ext_data, payload, payload_len);
+
+      sendto(sock->socket, response_packet, plen, 0,
+             (struct sockaddr *)&(sock->conn), conn_len);
+      free(response_packet);
+      break;
+    }
+
+    case ACK_FLAG_MASK: {
+      // Record last ack received by other side
+      uint32_t recv_ack = get_ack(hdr);
+      if (after(recv_ack, sock->window.last_ack_received)) {
+        sock->window.last_ack_received = recv_ack;
+      }
+
+      // If this is not incoming data packet, no need to reply with ACK
+      if (get_plen(hdr) == get_hlen(hdr)) {
+        break;
+      }
+
+      // Otherwise, reply to acknowledge receipt of data packet
+      socklen_t conn_len = sizeof(sock->conn);
+      uint32_t seq = sock->window.last_ack_received;
 
       uint16_t src = sock->my_port;
       uint16_t dst = ntohs(sock->conn.sin_port);
       uint32_t ack = get_seq(hdr) + get_payload_len(pkt);
       uint16_t hlen = sizeof(cmu_tcp_header_t);
-      uint16_t plen = hlen + payload_len;
+      uint16_t plen = hlen;
       uint8_t flags = ACK_FLAG_MASK;
       uint16_t adv_window = 1;
+      uint16_t payload_len = 0;
+      uint8_t *payload = NULL;
+      uint16_t ext_len = 0;
+      uint8_t *ext_data = NULL;
       uint8_t *response_packet =
           create_packet(src, dst, seq, ack, hlen, plen, flags, adv_window,
                         ext_len, ext_data, payload, payload_len);
@@ -92,8 +158,8 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
              (struct sockaddr *)&(sock->conn), conn_len);
       free(response_packet);
 
+      // If this is a new sequence / segment, store in socket recv buffer
       seq = get_seq(hdr);
-
       if (seq == sock->window.next_seq_expected) {
         sock->window.next_seq_expected = seq + get_payload_len(pkt);
         payload_len = get_payload_len(pkt);
@@ -179,23 +245,54 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
   uint8_t *msg;
   uint8_t *data_offset = data;
   size_t conn_len = sizeof(sock->conn);
-
   int sockfd = sock->socket;
+
+  // Initiator sends SYN with seq/x = rand()
+  struct timespec nanos;
+  clock_gettime(CLOCK_MONOTONIC, &nanos);
+  srand(nanos.tv_nsec);
+  sock->window.last_ack_received = rand();
+  uint16_t src = sock->my_port;
+  uint16_t dst = ntohs(sock->conn.sin_port);
+  uint32_t seq = sock->window.last_ack_received;
+  uint32_t ack = 0;  // Doesn't matter since SYN only cares about seq.
+  uint16_t hlen = sizeof(cmu_tcp_header_t);
+  uint16_t plen = hlen;
+  uint8_t flags = SYN_FLAG_MASK;
+  uint16_t adv_window = 1;
+  uint16_t ext_len = 0;
+  uint8_t *ext_data = NULL;
+  uint16_t payload_len = 0;
+  uint8_t *payload = NULL;
+  msg = create_packet(src, dst, seq, ack, hlen, plen, flags, adv_window,
+                      ext_len, ext_data, payload, payload_len);
+
+  // Stop and wait method to receive SYN-ACK from Listener
+  while (1) {
+    sendto(sockfd, msg, plen, 0, (struct sockaddr *)&(sock->conn), conn_len);
+    check_for_data(sock, TIMEOUT);
+    if (has_been_acked(sock, seq)) {
+      free(msg);
+      break;
+    }
+  }
+
+  // Handshake complete. Now send data in TCP segments.
   if (buf_len > 0) {
     while (buf_len != 0) {
-      uint16_t payload_len = MIN((uint32_t)buf_len, (uint32_t)MSS);
+      payload_len = MIN((uint32_t)buf_len, (uint32_t)MSS);
 
-      uint16_t src = sock->my_port;
-      uint16_t dst = ntohs(sock->conn.sin_port);
-      uint32_t seq = sock->window.last_ack_received;
-      uint32_t ack = sock->window.next_seq_expected;
-      uint16_t hlen = sizeof(cmu_tcp_header_t);
-      uint16_t plen = hlen + payload_len;
-      uint8_t flags = 0;
-      uint16_t adv_window = 1;
-      uint16_t ext_len = 0;
-      uint8_t *ext_data = NULL;
-      uint8_t *payload = data_offset;
+      src = sock->my_port;
+      dst = ntohs(sock->conn.sin_port);
+      seq = sock->window.last_ack_received;
+      ack = sock->window.next_seq_expected;
+      hlen = sizeof(cmu_tcp_header_t);
+      plen = hlen + payload_len;
+      flags = ACK_FLAG_MASK;
+      adv_window = 1;
+      ext_len = 0;
+      ext_data = NULL;
+      payload = data_offset;
 
       msg = create_packet(src, dst, seq, ack, hlen, plen, flags, adv_window,
                           ext_len, ext_data, payload, payload_len);
@@ -207,6 +304,7 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
                conn_len);
         check_for_data(sock, TIMEOUT);
         if (has_been_acked(sock, seq)) {
+          free(msg);
           break;
         }
       }
