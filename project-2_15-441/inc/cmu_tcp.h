@@ -22,6 +22,7 @@
 
 #include "cmu_packet.h"
 #include "grading.h"
+#include "queue.h"
 
 #define EXIT_SUCCESS 0
 #define EXIT_ERROR -1
@@ -30,6 +31,7 @@
 typedef struct {
   uint32_t next_seq_expected;
   uint32_t last_ack_received;
+  queue_t sent_queue;
 } window_t;
 
 /**

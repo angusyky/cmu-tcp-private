@@ -53,6 +53,8 @@ int cmu_socket(cmu_socket_t *sock, const cmu_socket_type_t socket_type,
   // other side of the connection.
   sock->window.last_ack_received = 0;
   sock->window.next_seq_expected = 0;
+  sock->window.sent_queue.head = 0;
+  sock->window.sent_queue.count = 0;
 
   if (pthread_cond_init(&sock->wait_cond, NULL) != 0) {
     perror("ERROR condition variable not set\n");

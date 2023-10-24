@@ -23,13 +23,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/types.h>
 #include <time.h>
 
 #include "cmu_packet.h"
 #include "cmu_tcp.h"
 
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
+
 /**
  * Get random integer
  */
@@ -43,7 +43,7 @@ int get_rand_seq_num() {
 /**
  * Create simple packet with no payload
  */
-uint8_t *create_default_packet(cmu_socket_t *sock, uint8_t flags) {
+uint8_t *create_simple_packet(cmu_socket_t *sock, uint8_t flags) {
   uint16_t src = sock->my_port;
   uint16_t dst = ntohs(sock->conn.sin_port);
   uint32_t seq = sock->window.last_ack_received;
@@ -57,6 +57,56 @@ uint8_t *create_default_packet(cmu_socket_t *sock, uint8_t flags) {
   uint8_t *ext_data = NULL;
   return create_packet(src, dst, seq, ack, hlen, plen, flags, adv_window,
                        ext_len, ext_data, payload, payload_len);
+}
+
+/**
+ * Create a packet without payload (for handshake and listener ACKs)
+ */
+uint8_t *create_data_packet(cmu_socket_t *sock, uint16_t payload_len,
+                            uint8_t *payload) {
+  uint16_t src = sock->my_port;
+  uint16_t dst = ntohs(sock->conn.sin_port);
+  uint32_t seq = sock->window.last_ack_received;
+  uint32_t ack = sock->window.next_seq_expected;
+  uint16_t hlen = sizeof(cmu_tcp_header_t);
+  uint16_t plen = hlen + payload_len;
+  uint8_t flags = ACK_FLAG_MASK;
+  uint16_t adv_window = 1;
+  uint16_t ext_len = 0;
+  uint8_t *ext_data = NULL;
+  return create_packet(src, dst, seq, ack, hlen, plen, flags, adv_window,
+                       ext_len, ext_data, payload, payload_len);
+}
+
+/**
+ * Check if packet has the right fields for its type
+ */
+bool validate_packet(uint8_t *packet) {
+  cmu_tcp_header_t *hdr = (cmu_tcp_header_t *)packet;
+  uint8_t recv_flags = get_flags(hdr);
+
+  switch (recv_flags) {
+    case SYN_FLAG_MASK:
+      if (get_hlen(hdr) != sizeof(cmu_tcp_header_t)) return false;
+      if (get_plen(hdr) != get_hlen(hdr)) return false;
+      if (get_payload_len(packet) != 0) return false;
+      if (get_seq(hdr) == 0) return false;
+      break;
+    case SYN_FLAG_MASK | ACK_FLAG_MASK:
+      if (get_hlen(hdr) != sizeof(cmu_tcp_header_t)) return false;
+      if (get_plen(hdr) != get_hlen(hdr)) return false;
+      if (get_payload_len(packet) != 0) return false;
+      if (get_seq(hdr) == 0) return false;
+      if (get_ack(hdr) == 0) return false;
+      break;
+    case ACK_FLAG_MASK:
+      if (get_ack(hdr) == 0) return false;
+      break;
+    default:
+      // INVALID FLAG
+      return false;
+  }
+  return true;
 }
 
 /**
@@ -86,13 +136,15 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
   cmu_tcp_header_t *hdr = (cmu_tcp_header_t *)pkt;
   uint8_t recv_flags = get_flags(hdr);
 
+  if (!validate_packet(pkt)) return;
+
   switch (recv_flags) {
     case SYN_FLAG_MASK: {
       // Listener responds using SYN-ACK with seq/y = rand() and ack = x + 1
       sock->window.next_seq_expected = get_seq(hdr) + 1;
       sock->window.last_ack_received = get_rand_seq_num();
       uint8_t *response_packet =
-          create_default_packet(sock, SYN_FLAG_MASK | ACK_FLAG_MASK);
+          create_simple_packet(sock, SYN_FLAG_MASK | ACK_FLAG_MASK);
       sendto(sock->socket, response_packet, sizeof(cmu_tcp_header_t), 0,
              (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
       free(response_packet);
@@ -108,7 +160,7 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
 
       // Initiator responds using ACK with ack = y + 1
       sock->window.next_seq_expected = get_seq(hdr) + 1;
-      uint8_t *response_packet = create_default_packet(sock, ACK_FLAG_MASK);
+      uint8_t *response_packet = create_simple_packet(sock, ACK_FLAG_MASK);
       sendto(sock->socket, response_packet, sizeof(cmu_tcp_header_t), 0,
              (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
       free(response_packet);
@@ -120,6 +172,7 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
       uint32_t recv_ack = get_ack(hdr);
       if (after(recv_ack, sock->window.last_ack_received)) {
         sock->window.last_ack_received = recv_ack;
+        // IF LISTENER: Free packets in send window
       }
 
       // Ignore handshake / non-data ACKs
@@ -143,11 +196,15 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
       }
 
       // Send ACK to acknowledge receipt of data packet
-      uint8_t *response_packet = create_default_packet(sock, ACK_FLAG_MASK);
+      uint8_t *response_packet = create_simple_packet(sock, ACK_FLAG_MASK);
       sendto(sock->socket, response_packet, sizeof(cmu_tcp_header_t), 0,
              (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
       free(response_packet);
+      break;
     }
+
+    default:
+      return;
   }
 }
 
@@ -226,7 +283,7 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
   uint32_t initial_seq = get_rand_seq_num();
   sock->window.last_ack_received = initial_seq;
   sock->window.next_seq_expected = 0;
-  msg = create_default_packet(sock, SYN_FLAG_MASK);
+  msg = create_simple_packet(sock, SYN_FLAG_MASK);
   while (1) {
     sendto(sockfd, msg, sizeof(cmu_tcp_header_t), 0,
            (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
@@ -240,29 +297,30 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
   // Handshake complete. Now send data in TCP windows.
   if (buf_len > 0) {
     while (buf_len != 0) {
+      // check_for_data(sock, NO_WAIT);
+
       uint16_t payload_len = MIN((uint32_t)buf_len, (uint32_t)MSS);
 
-      uint16_t src = sock->my_port;
-      uint16_t dst = ntohs(sock->conn.sin_port);
-      uint32_t seq = sock->window.last_ack_received;
-      uint32_t ack = sock->window.next_seq_expected;
+      // if (Highest Seq Sent + Payload Len - Last Ack) <= Window:
+        // I have space in window
+        // Send and enqueue
+
+      // Check all sent packets for timeouts
+        // If there is timeout:
+        //  resend all packets with higher seq num
+
       uint16_t hlen = sizeof(cmu_tcp_header_t);
       uint16_t plen = hlen + payload_len;
-      uint8_t flags = ACK_FLAG_MASK;
-      uint16_t adv_window = 1;
-      uint16_t ext_len = 0;
-      uint8_t *ext_data = NULL;
-      uint8_t *payload = data_offset;
 
-      msg = create_packet(src, dst, seq, ack, hlen, plen, flags, adv_window,
-                          ext_len, ext_data, payload, payload_len);
-      buf_len -= payload_len;
+      initial_seq = sock->window.last_ack_received;
+      msg = create_data_packet(sock, payload_len, data_offset);
+      buf_len -= payload_len;  // Can only move this once it has been acked
 
       while (1) {
         sendto(sockfd, msg, plen, 0, (struct sockaddr *)&(sock->conn),
                sizeof(sock->conn));
         check_for_data(sock, TIMEOUT);
-        if (has_been_acked(sock, seq)) {
+        if (has_been_acked(sock, initial_seq)) {
           free(msg);
           break;
         }

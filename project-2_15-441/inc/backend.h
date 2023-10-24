@@ -16,14 +16,26 @@
 #ifndef PROJECT_2_15_441_INC_BACKEND_H_
 #define PROJECT_2_15_441_INC_BACKEND_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "cmu_tcp.h"
 
 /**
- * Create ack packet
+ * Create a packet without payload (for handshake and listener ACKs)
  */
-uint8_t* create_default_packet(cmu_socket_t* sock, uint8_t flags);
+uint8_t* create_simple_packet(cmu_socket_t* sock, uint8_t flags);
+
+/**
+ * Create a packet without payload (for handshake and listener ACKs)
+ */
+uint8_t* create_data_packet(cmu_socket_t* sock, uint16_t payload_len,
+                            uint8_t* data);
+
+/**
+ * Check that packet is valid
+ */
+bool validate_packet(uint8_t* packet);
 
 /**
  * Launches the CMU-TCP backend.
