@@ -21,16 +21,23 @@
 
 #include "cmu_tcp.h"
 
-/**
- * Create a packet without payload (for handshake and listener ACKs)
- */
-uint8_t* create_simple_packet(cmu_socket_t* sock, uint8_t flags);
+void print_packet(uint8_t* packet, bool is_recv);
+void print_queue(queue_t* q);
+void print_state(cmu_socket_t* sock);
+uint32_t time_ms();
+uint32_t get_rand_seq_num();
 
 /**
  * Create a packet without payload (for handshake and listener ACKs)
  */
-uint8_t* create_data_packet(cmu_socket_t* sock, uint16_t payload_len,
-                            uint8_t* data);
+uint8_t* create_simple_packet(cmu_socket_t* sock, uint32_t seq, uint32_t ack,
+                              uint8_t flags);
+
+/**
+ * Create a packet with payload
+ */
+uint8_t* create_data_packet(cmu_socket_t* sock, uint32_t seq, uint32_t ack,
+                            uint16_t payload_len, uint8_t* payload);
 
 /**
  * Check that packet is valid

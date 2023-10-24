@@ -13,14 +13,14 @@ window_packet_t *back(queue_t *q) {
   if (q->count == 0) {
     return NULL;
   }
-  int tail_idx = (q->head + q->count - 1) % N_ITEMS;
+  uint32_t tail_idx = (q->head + q->count - 1) % N_ITEMS;
   return &q->arr[tail_idx];
 }
 
 int enqueue(queue_t *q, uint8_t *packet, uint32_t seq, uint32_t time_sent) {
-  int new_idx = (q->head + q->count) % N_ITEMS;
+  uint32_t new_idx = (q->head + q->count) % N_ITEMS;
   if (q->count == N_ITEMS) {
-    printf("Queue full\n");
+    printf("Queue full: %d / %d\n", q->count, N_ITEMS);
     return -1;
   } else {
     q->count++;
@@ -43,4 +43,4 @@ int dequeue(queue_t *q) {
   }
 }
 
-int get_arr_idx(queue_t *q, int i) { return (q->head + i) % N_ITEMS; }
+uint32_t get_arr_idx(queue_t *q, uint32_t i) { return (q->head + i) % N_ITEMS; }
