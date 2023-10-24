@@ -69,25 +69,23 @@ uint8_t *create_data_packet(cmu_socket_t *sock, uint32_t seq, uint32_t ack,
 /**
  * Check if packet has the right fields for its type
  */
-bool validate_packet(uint8_t *packet) {
+bool validate_packet(cmu_socket_t *sock, uint8_t *packet) {
   cmu_tcp_header_t *hdr = (cmu_tcp_header_t *)packet;
   uint8_t recv_flags = get_flags(hdr);
-
   switch (recv_flags) {
     case SYN_FLAG_MASK:
       if (get_hlen(hdr) != sizeof(cmu_tcp_header_t)) return false;
       if (get_plen(hdr) != get_hlen(hdr)) return false;
       if (get_payload_len(packet) != 0) return false;
-      if (get_seq(hdr) == 0) return false;
       break;
     case SYN_FLAG_MASK | ACK_FLAG_MASK:
       if (get_hlen(hdr) != sizeof(cmu_tcp_header_t)) return false;
       if (get_plen(hdr) != get_hlen(hdr)) return false;
       if (get_payload_len(packet) != 0) return false;
-      if (get_seq(hdr) == 0) return false;
       if (get_ack(hdr) == 0) return false;
       break;
     case ACK_FLAG_MASK:
+      if (sock->type == TCP_INITIATOR && !sock->established) return false;
       if (get_ack(hdr) == 0) return false;
       break;
     default:
@@ -124,15 +122,15 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
   cmu_tcp_header_t *hdr = (cmu_tcp_header_t *)pkt;
   uint8_t recv_flags = get_flags(hdr);
 
-  if (!validate_packet(pkt)) return;
+  if (!validate_packet(sock, pkt)) return;
   print_packet(pkt, true);
 
   switch (recv_flags) {
     case SYN_FLAG_MASK: {
       // Listener responds using SYN-ACK with seq/y = rand() and ack = x + 1
+      uint32_t initial_seq = get_rand_seq_num();
       sock->window.next_seq_expected = get_seq(hdr) + 1;
-      sock->window.last_ack_received = get_rand_seq_num();
-
+      sock->window.last_ack_received = initial_seq;
       uint32_t seq = sock->window.last_ack_received;
       uint32_t ack = sock->window.next_seq_expected;
       uint8_t flags = SYN_FLAG_MASK | ACK_FLAG_MASK;
@@ -151,9 +149,11 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
         sock->window.last_ack_received = recv_ack;
       }
 
+      // Initiator completes handshake
+      if (!sock->established) sock->established = true;
+
       // Initiator responds using ACK with ack = y + 1
       sock->window.next_seq_expected = get_seq(hdr) + 1;
-
       uint32_t seq = sock->window.last_ack_received;
       uint32_t ack = sock->window.next_seq_expected;
       uint8_t flags = ACK_FLAG_MASK;
@@ -286,7 +286,6 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
   sock->window.last_ack_received = initial_seq;
   sock->window.highest_byte_sent = initial_seq;
   sock->window.next_seq_expected = 0;
-
   uint32_t seq = sock->window.last_ack_received;
   uint32_t ack = sock->window.next_seq_expected;
   uint8_t flags = SYN_FLAG_MASK;
@@ -409,11 +408,11 @@ void *begin_backend(void *in) {
   return NULL;
 }
 
-/**
+/************************************************************************
  *
  * UTILS
  *
- */
+ *************************************************************************/
 
 /**
  * Print received packet

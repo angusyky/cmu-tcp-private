@@ -28,6 +28,18 @@ uint32_t time_ms();
 uint32_t get_rand_seq_num();
 
 /**
+ * Checks if the socket received any data.
+ *
+ * It first peeks at the header to figure out the length of the packet and then
+ * reads the entire packet.
+ *
+ * @param sock The socket used for receiving data on the connection.
+ * @param flags Flags that determine how the socket should wait for data. Check
+ *             `cmu_read_mode_t` for more information.
+ */
+void check_for_data(cmu_socket_t *sock, cmu_read_mode_t flags);
+
+/**
  * Create a packet without payload (for handshake and listener ACKs)
  */
 uint8_t* create_simple_packet(cmu_socket_t* sock, uint32_t seq, uint32_t ack,
@@ -42,7 +54,7 @@ uint8_t* create_data_packet(cmu_socket_t* sock, uint32_t seq, uint32_t ack,
 /**
  * Check that packet is valid
  */
-bool validate_packet(uint8_t* packet);
+bool validate_packet(cmu_socket_t* sock, uint8_t* packet);
 
 /**
  * Launches the CMU-TCP backend.

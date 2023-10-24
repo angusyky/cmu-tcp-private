@@ -63,6 +63,7 @@ typedef struct {
   int dying;
   pthread_mutex_t death_lock;
   window_t window;
+  bool established;
 } cmu_socket_t;
 
 /*
