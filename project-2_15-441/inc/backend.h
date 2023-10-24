@@ -16,6 +16,15 @@
 #ifndef PROJECT_2_15_441_INC_BACKEND_H_
 #define PROJECT_2_15_441_INC_BACKEND_H_
 
+#include <stdint.h>
+
+#include "cmu_tcp.h"
+
+/**
+ * Create ack packet
+ */
+uint8_t* create_default_packet(cmu_socket_t* sock, uint8_t flags);
+
 /**
  * Launches the CMU-TCP backend.
  *
