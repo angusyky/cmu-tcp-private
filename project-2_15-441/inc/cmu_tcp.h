@@ -35,6 +35,14 @@ typedef struct {
   queue_t sent_queue;
 } window_t;
 
+typedef enum {
+  CLOSED = 0,
+  LISTEN = 1,
+  SYN_SENT = 2,
+  SYN_RECV = 3,
+  ESTABLISHED = 4
+} tcp_handshake_state_t;
+
 /**
  * CMU-TCP socket types. (DO NOT CHANGE.)
  */
@@ -63,7 +71,7 @@ typedef struct {
   int dying;
   pthread_mutex_t death_lock;
   window_t window;
-  bool established;
+  tcp_handshake_state_t tcp_handshake_state;
 } cmu_socket_t;
 
 /*

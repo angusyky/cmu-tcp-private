@@ -82,10 +82,16 @@ bool validate_packet(cmu_socket_t *sock, uint8_t *packet) {
       if (get_hlen(hdr) != sizeof(cmu_tcp_header_t)) return false;
       if (get_plen(hdr) != get_hlen(hdr)) return false;
       if (get_payload_len(packet) != 0) return false;
-      if (get_ack(hdr) == 0) return false;
+      if (get_ack(hdr) != sock->window.last_ack_received + 1) return false;
       break;
     case ACK_FLAG_MASK:
-      if (sock->type == TCP_INITIATOR && !sock->established) return false;
+      if (sock->type == TCP_INITIATOR &&
+          sock->tcp_handshake_state != ESTABLISHED)
+        return false;
+      if (sock->type == TCP_LISTENER &&
+          sock->tcp_handshake_state != ESTABLISHED &&
+          get_ack(hdr) != sock->window.last_ack_received + 1)
+        return false;
       if (get_ack(hdr) == 0) return false;
       break;
     default:
@@ -127,52 +133,39 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
 
   switch (recv_flags) {
     case SYN_FLAG_MASK: {
-      // Listener responds using SYN-ACK with seq/y = rand() and ack = x + 1
-      uint32_t initial_seq = get_rand_seq_num();
-      sock->window.next_seq_expected = get_seq(hdr) + 1;
-      sock->window.last_ack_received = initial_seq;
-      uint32_t seq = sock->window.last_ack_received;
-      uint32_t ack = sock->window.next_seq_expected;
-      uint8_t flags = SYN_FLAG_MASK | ACK_FLAG_MASK;
-      uint8_t *packet = create_simple_packet(sock, seq, ack, flags);
-      sendto(sock->socket, packet, sizeof(cmu_tcp_header_t), 0,
-             (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
-      print_packet(packet, false);
-      free(packet);
+      if (sock->type == TCP_LISTENER) {
+        sock->tcp_handshake_state = SYN_RECV;
+        sock->window.next_seq_expected = get_seq(hdr) + 1;
+      }
       break;
     }
 
     case (SYN_FLAG_MASK | ACK_FLAG_MASK): {
-      // Initiator records last seq num received by Listener
-      uint32_t recv_ack = get_ack(hdr);
-      if (after(recv_ack, sock->window.last_ack_received)) {
-        sock->window.last_ack_received = recv_ack;
+      if (sock->type == TCP_INITIATOR) {
+        sock->tcp_handshake_state = ESTABLISHED;
+        sock->window.next_seq_expected = get_seq(hdr) + 1;
+
+        // Record last ACK from Listener
+        uint32_t recv_ack = get_ack(hdr);
+        if (after(recv_ack, sock->window.last_ack_received)) {
+          sock->window.last_ack_received = recv_ack;
+        }
       }
-
-      // Initiator completes handshake
-      if (!sock->established) sock->established = true;
-
-      // Initiator responds using ACK with ack = y + 1
-      sock->window.next_seq_expected = get_seq(hdr) + 1;
-      uint32_t seq = sock->window.last_ack_received;
-      uint32_t ack = sock->window.next_seq_expected;
-      uint8_t flags = ACK_FLAG_MASK;
-      uint8_t *packet = create_simple_packet(sock, seq, ack, flags);
-      sendto(sock->socket, packet, sizeof(cmu_tcp_header_t), 0,
-             (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
-      print_packet(packet, false);
-      free(packet);
       break;
     }
 
     case ACK_FLAG_MASK: {
-      // Receiver records last seq num received by other side
+      if (sock->type == TCP_LISTENER) {
+        sock->tcp_handshake_state = ESTABLISHED;
+      }
+
+      // Record last ACK from other side
       uint32_t recv_ack = get_ack(hdr);
       if (after(recv_ack, sock->window.last_ack_received)) {
         sock->window.last_ack_received = recv_ack;
       }
 
-      // Ignore handshake / non-data ACKs
+      // Ignore handshake / non-data ACKs.
       if (get_plen(hdr) == get_hlen(hdr)) {
         break;
       }
@@ -279,29 +272,7 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
   uint8_t *msg;
   uint8_t *data_offset = data;
   int sockfd = sock->socket;
-  printf("\nNEW SINGLE SEND\n");
 
-  // Initiator sends SYN with seq/x = rand() until we receive SYN-ACK
-  uint32_t initial_seq = get_rand_seq_num();
-  sock->window.last_ack_received = initial_seq;
-  sock->window.highest_byte_sent = initial_seq;
-  sock->window.next_seq_expected = 0;
-  uint32_t seq = sock->window.last_ack_received;
-  uint32_t ack = sock->window.next_seq_expected;
-  uint8_t flags = SYN_FLAG_MASK;
-  msg = create_simple_packet(sock, seq, ack, flags);
-  while (1) {
-    sendto(sockfd, msg, sizeof(cmu_tcp_header_t), 0,
-           (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
-    print_packet(msg, false);
-    check_for_data(sock, TIMEOUT);
-    if (has_been_acked(sock, initial_seq)) {
-      free(msg);
-      break;
-    }
-  }
-
-  // Handshake complete. Now send data in TCP windows.
   if (buf_len > 0) {
     while (buf_len != 0) {
       // Find out how big next packet is
@@ -314,8 +285,8 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
       uint32_t window_max = sock->window.last_ack_received + CP1_WINDOW_SIZE;
       if (before(new_highest_byte, window_max)) {
         // Send packet
-        seq = sock->window.highest_byte_sent + 1;
-        ack = sock->window.next_seq_expected;
+        uint32_t seq = sock->window.highest_byte_sent + 1;
+        uint32_t ack = sock->window.next_seq_expected;
         msg = create_data_packet(sock, seq, ack, payload_len, data_offset);
         sendto(sockfd, msg, plen, 0, (struct sockaddr *)&(sock->conn),
                sizeof(sock->conn));
@@ -363,6 +334,8 @@ void *begin_backend(void *in) {
   int death, buf_len, send_signal;
   uint8_t *data;
 
+  tcp_handshake(sock);
+
   while (1) {
     while (pthread_mutex_lock(&(sock->death_lock)) != 0) {
     }
@@ -408,6 +381,67 @@ void *begin_backend(void *in) {
   return NULL;
 }
 
+/**
+ * Perform TCP handshake depending on role
+ */
+void tcp_handshake(cmu_socket_t *sock) {
+  while (sock->tcp_handshake_state != ESTABLISHED) {
+    switch (sock->type) {
+      case TCP_INITIATOR: {
+        // Initiator sends SYN with seq/x = rand()
+        uint32_t initial_seq = get_rand_seq_num();
+        sock->window.last_ack_received = initial_seq;
+        sock->window.highest_byte_sent = initial_seq;
+        sock->window.next_seq_expected = 0;
+        uint32_t seq = sock->window.last_ack_received;
+        uint32_t ack = sock->window.next_seq_expected;
+        uint8_t flags = SYN_FLAG_MASK;
+        uint8_t *packet = create_simple_packet(sock, seq, ack, flags);
+
+        // Retransmit until SYN-ACK is received
+        while (1) {
+          sendto(sock->socket, packet, sizeof(cmu_tcp_header_t), 0,
+                 (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
+          print_packet(packet, false);
+          check_for_data(sock, TIMEOUT);
+          if (has_been_acked(sock, initial_seq)) {
+            free(packet);
+            break;
+          }
+        }
+        break;
+      }
+
+      case TCP_LISTENER: {
+        if (sock->tcp_handshake_state == LISTEN) {
+          check_for_data(sock, TIMEOUT);
+        } else if (sock->tcp_handshake_state == SYN_RECV) {
+          // Listener sends SYN-ACK with seq/y = rand() and ack = x + 1
+          uint32_t initial_seq = get_rand_seq_num();
+          sock->window.last_ack_received = initial_seq;
+          sock->window.highest_byte_sent = initial_seq;
+          uint32_t seq = sock->window.last_ack_received;
+          uint32_t ack = sock->window.next_seq_expected;
+          uint8_t flags = SYN_FLAG_MASK | ACK_FLAG_MASK;
+          uint8_t *packet = create_simple_packet(sock, seq, ack, flags);
+
+          // Retransmit until ACK is received
+          while (1) {
+            sendto(sock->socket, packet, sizeof(cmu_tcp_header_t), 0,
+                   (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
+            print_packet(packet, false);
+            check_for_data(sock, TIMEOUT);
+            if (has_been_acked(sock, initial_seq)) {
+              free(packet);
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 /************************************************************************
  *
  * UTILS
@@ -425,9 +459,6 @@ void print_packet(uint8_t *packet, bool is_recv) {
 
   switch (recv_flags) {
     case SYN_FLAG_MASK:
-      if (is_recv) {
-        printf("\nNEW SINGLE RECV\n");
-      }
       printf("%s SYN (seq = %d)\n", action, get_seq(hdr));
       break;
     case SYN_FLAG_MASK | ACK_FLAG_MASK:
@@ -456,6 +487,7 @@ void print_state(cmu_socket_t *sock) {
   printf("[");
   printf(" LAST_ACK: %d ", sock->window.last_ack_received);
   printf(" HIGHEST_SEQ: %d ", sock->window.highest_byte_sent);
+  printf(" TCP_STATE: %d ", sock->tcp_handshake_state);
   printf("]\n");
 }
 

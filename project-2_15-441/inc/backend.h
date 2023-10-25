@@ -26,6 +26,7 @@ void print_queue(queue_t* q);
 void print_state(cmu_socket_t* sock);
 uint32_t time_ms();
 uint32_t get_rand_seq_num();
+void tcp_handshake(cmu_socket_t* sock);
 
 /**
  * Checks if the socket received any data.
@@ -37,7 +38,7 @@ uint32_t get_rand_seq_num();
  * @param flags Flags that determine how the socket should wait for data. Check
  *             `cmu_read_mode_t` for more information.
  */
-void check_for_data(cmu_socket_t *sock, cmu_read_mode_t flags);
+void check_for_data(cmu_socket_t* sock, cmu_read_mode_t flags);
 
 /**
  * Create a packet without payload (for handshake and listener ACKs)
