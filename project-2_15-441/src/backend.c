@@ -143,13 +143,23 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
     case (SYN_FLAG_MASK | ACK_FLAG_MASK): {
       if (sock->type == TCP_INITIATOR) {
         sock->tcp_handshake_state = ESTABLISHED;
-        sock->window.next_seq_expected = get_seq(hdr) + 1;
 
         // Record last ACK from Listener
         uint32_t recv_ack = get_ack(hdr);
         if (after(recv_ack, sock->window.last_ack_received)) {
           sock->window.last_ack_received = recv_ack;
         }
+
+        // Respond using ACK with ack = y + 1
+        sock->window.next_seq_expected = get_seq(hdr) + 1;
+        uint32_t seq = sock->window.last_ack_received;
+        uint32_t ack = sock->window.next_seq_expected;
+        uint8_t flags = ACK_FLAG_MASK;
+        uint8_t *packet = create_simple_packet(sock, seq, ack, flags);
+        sendto(sock->socket, packet, sizeof(cmu_tcp_header_t), 0,
+               (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
+        print_packet(packet, false);
+        free(packet);
       }
       break;
     }
