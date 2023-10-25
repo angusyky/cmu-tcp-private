@@ -74,15 +74,20 @@ bool validate_packet(cmu_socket_t *sock, uint8_t *packet) {
   uint8_t recv_flags = get_flags(hdr);
   switch (recv_flags) {
     case SYN_FLAG_MASK:
+      if (sock->type != TCP_LISTENER) return false;
+      if (sock->handshake_state != LISTEN) return false;
       if (get_hlen(hdr) != sizeof(cmu_tcp_header_t)) return false;
       if (get_plen(hdr) != get_hlen(hdr)) return false;
       if (get_payload_len(packet) != 0) return false;
       break;
     case SYN_FLAG_MASK | ACK_FLAG_MASK:
+      if (sock->type != TCP_INITIATOR) return false;
       if (get_hlen(hdr) != sizeof(cmu_tcp_header_t)) return false;
       if (get_plen(hdr) != get_hlen(hdr)) return false;
       if (get_payload_len(packet) != 0) return false;
-      if (get_ack(hdr) != sock->window.last_ack_received + 1) return false;
+      if (sock->handshake_state != ESTABLISHED &&
+          get_ack(hdr) != sock->window.last_ack_received + 1)
+        return false;
       break;
     case ACK_FLAG_MASK:
       if (sock->type == TCP_INITIATOR && sock->handshake_state != ESTABLISHED)
@@ -131,45 +136,37 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
 
   switch (recv_flags) {
     case SYN_FLAG_MASK: {
-      if (sock->type == TCP_LISTENER && sock->handshake_state == LISTEN) {
-        sock->handshake_state = SYN_RECV;
-        sock->window.next_seq_expected = get_seq(hdr) + 1;
-      }
+      sock->handshake_state = SYN_RECV;
+      sock->window.next_seq_expected = get_seq(hdr) + 1;
       break;
     }
 
     case (SYN_FLAG_MASK | ACK_FLAG_MASK): {
-      if (sock->type == TCP_INITIATOR) {
-        // Record last ACK from Listener
-        uint32_t recv_ack = get_ack(hdr);
-        if (after(recv_ack, sock->window.last_ack_received)) {
-          sock->window.last_ack_received = recv_ack;
-        }
-
-        // Initialize sequence number from Listener
-        if (sock->handshake_state != ESTABLISHED) {
-          sock->handshake_state = ESTABLISHED;
-          sock->window.next_seq_expected = get_seq(hdr) + 1;
-        }
-
-        // Respond with basic ACK
-        uint32_t seq = sock->window.last_ack_received;
-        uint32_t ack = sock->window.next_seq_expected;
-        uint8_t flags = ACK_FLAG_MASK;
-        uint8_t *packet = create_simple_packet(sock, seq, ack, flags);
-        sendto(sock->socket, packet, sizeof(cmu_tcp_header_t), 0,
-               (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
-        print_packet(packet, false);
-        free(packet);
+      // Record last ACK from Listener
+      uint32_t recv_ack = get_ack(hdr);
+      if (after(recv_ack, sock->window.last_ack_received)) {
+        sock->window.last_ack_received = recv_ack;
       }
+
+      // Initialize sequence number from Listener
+      if (sock->handshake_state != ESTABLISHED) {
+        sock->window.next_seq_expected = get_seq(hdr) + 1;
+      }
+
+      // Respond with basic ACK
+      uint32_t seq = sock->window.last_ack_received;
+      uint32_t ack = sock->window.next_seq_expected;
+      uint8_t flags = ACK_FLAG_MASK;
+      uint8_t *packet = create_simple_packet(sock, seq, ack, flags);
+      sendto(sock->socket, packet, sizeof(cmu_tcp_header_t), 0,
+             (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
+      print_packet(packet, false);
+      free(packet);
+
       break;
     }
 
     case ACK_FLAG_MASK: {
-      if (sock->type == TCP_LISTENER) {
-        sock->handshake_state = ESTABLISHED;
-      }
-
       // Record last ACK from other side
       uint32_t recv_ack = get_ack(hdr);
       if (after(recv_ack, sock->window.last_ack_received)) {
@@ -298,7 +295,6 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
         msg = create_data_packet(sock, seq, ack, payload_len, data_offset);
         sendto(sockfd, msg, sizeof(cmu_tcp_header_t) + payload_len, 0,
                (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
-        print_packet(msg, false);
 
         // Update data structures
         data_offset += payload_len;
@@ -307,7 +303,6 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
         enqueue(q, msg, seq, time_ms());
       }
 
-      // Window is full or all bytes have been sent.
       // Check all sent packets for ACKs so that we can advance the window.
       window_packet_t *wp;
       while ((wp = front(q)) != NULL) {
@@ -324,9 +319,8 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
         for (uint32_t i = 0; i < q->count; ++i) {
           wp = &q->arr[get_arr_idx(q, i)];
           if (time_ms() - wp->time_sent >= DEFAULT_TIMEOUT) {
-            print_packet(wp->packet, false);
-            sendto(sockfd, wp->packet, get_plen((cmu_tcp_header_t *)wp), 0,
-                   (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
+            sendto(sockfd, wp->packet, get_plen((cmu_tcp_header_t *)wp->packet),
+                   0, (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
             wp->time_sent = time_ms();
           }
         }
@@ -414,6 +408,7 @@ void tcp_handshake(cmu_socket_t *sock) {
           print_packet(packet, false);
           check_for_data(sock, TIMEOUT);
           if (has_been_acked(sock, initial_seq)) {
+            sock->handshake_state = ESTABLISHED;
             free(packet);
             break;
           }
@@ -422,9 +417,11 @@ void tcp_handshake(cmu_socket_t *sock) {
       }
 
       case TCP_LISTENER: {
-        if (sock->handshake_state == LISTEN) {
+        while (sock->handshake_state == LISTEN) {
           check_for_data(sock, TIMEOUT);
-        } else if (sock->handshake_state == SYN_RECV) {
+        }
+
+        if (sock->handshake_state == SYN_RECV) {
           // Listener sends SYN-ACK with seq/y = rand() and ack = x + 1
           uint32_t initial_seq = get_rand_seq_num();
           sock->window.last_ack_received = initial_seq;
@@ -441,6 +438,7 @@ void tcp_handshake(cmu_socket_t *sock) {
             print_packet(packet, false);
             check_for_data(sock, TIMEOUT);
             if (has_been_acked(sock, initial_seq)) {
+              sock->handshake_state = ESTABLISHED;
               free(packet);
               break;
             }
@@ -477,15 +475,17 @@ void print_packet(uint8_t *packet, bool is_recv) {
       break;
     case ACK_FLAG_MASK:
       if (get_payload_len(packet) != 0) {
-        printf("%s DATA (seq = %d, ack = %d, payload = %d)\n", action,
-               get_seq(hdr), get_ack(hdr), get_payload_len(packet));
+        printf("%s DATA (seq = %d, ack = %d, payload = %d, plen = %d)\n",
+               action, get_seq(hdr), get_ack(hdr), get_payload_len(packet),
+               get_plen(hdr));
       } else {
-        printf("%s ACK (ack = %d)\n", action, get_ack(hdr));
+        printf("%s ACK (seq = %d, ack = %d)\n", action, get_seq(hdr),
+               get_ack(hdr));
       }
       break;
     default:
-      // INVALID FLAG
       return;
+      printf("INVALID FLAG\n");
   }
 }
 
@@ -496,8 +496,11 @@ void print_state(cmu_socket_t *sock) {
   if (!PRINT_DBG) return;
   printf("[");
   printf(" LAST_ACK: %d ", sock->window.last_ack_received);
-  printf(" HIGHEST_SEQ: %d ", sock->window.highest_byte_sent);
+  printf(" NEXT_SEQ: %d ", sock->window.next_seq_expected);
+  printf(" HIGHEST_BYTE_SENT: %d ", sock->window.highest_byte_sent);
   printf(" TCP_STATE: %d ", sock->handshake_state);
+  printf(" SOCK_RECV_LEN: %d ", sock->received_len);
+  printf(" SOCK_SEND_LEN: %d ", sock->sending_len);
   printf("]\n");
 }
 
@@ -506,10 +509,13 @@ void print_state(cmu_socket_t *sock) {
  */
 void print_queue(queue_t *q) {
   if (!PRINT_DBG) return;
-  printf("Queue (HEAD: %d, COUNT: %d) = [ ", q->head, q->count);
+  printf("Queue (HEAD: %d, COUNT: %d)\n", q->head, q->count);
+  printf("[\n");
   for (uint32_t i = 0; i < q->count; ++i) {
     window_packet_t *wp = &q->arr[get_arr_idx(q, i)];
-    printf("(seq: %d, time_sent: %d), ", wp->seq_num, wp->time_sent);
+    printf("(time_sent: %d, plen) ", wp->time_sent);
+    print_packet(wp->packet, false);
+    printf("\n");
   }
   printf("]\n");
 }
