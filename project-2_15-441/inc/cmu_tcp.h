@@ -71,7 +71,7 @@ typedef struct {
   int dying;
   pthread_mutex_t death_lock;
   window_t window;
-  tcp_handshake_state_t tcp_handshake_state;
+  tcp_handshake_state_t handshake_state;
 } cmu_socket_t;
 
 /*

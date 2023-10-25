@@ -80,8 +80,7 @@ int cmu_socket(cmu_socket_t *sock, const cmu_socket_type_t socket_type,
         perror("ERROR on binding");
         return EXIT_ERROR;
       }
-
-      sock->tcp_handshake_state = CLOSED;
+      sock->handshake_state = CLOSED;
       break;
 
     case TCP_LISTENER:
@@ -98,7 +97,7 @@ int cmu_socket(cmu_socket_t *sock, const cmu_socket_type_t socket_type,
         return EXIT_ERROR;
       }
       sock->conn = conn;
-      sock->tcp_handshake_state = LISTEN;
+      sock->handshake_state = LISTEN;
       break;
 
     default:
