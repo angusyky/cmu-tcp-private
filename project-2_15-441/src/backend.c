@@ -282,6 +282,7 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
   uint8_t *msg;
   uint8_t *data_offset = data;
   int sockfd = sock->socket;
+  queue_t *q = &sock->window.sent_queue;
 
   if (buf_len > 0) {
     while (buf_len != 0) {
@@ -304,36 +305,35 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
 
         // Update data structures
         data_offset += payload_len;
+        buf_len -= payload_len;
         sock->window.highest_byte_sent = new_highest_byte;
-        enqueue(&sock->window.sent_queue, msg, seq, time_ms());
+        enqueue(q, msg, seq, time_ms());
       }
 
-      // Check all sent packets for ACKs
-      queue_t *q = &sock->window.sent_queue;
+      // Check all sent packets for ACKs, so we can advance the window
       window_packet_t *wp;
       while ((wp = front(q)) != NULL) {
         check_for_data(sock, NO_WAIT);
+
+        // This packet is ACKed. Remove from queue.
         if (has_been_acked(sock, wp->seq_num)) {
-          buf_len -= get_payload_len(wp->packet);
           free(wp->packet);
           dequeue(q);
+          continue;
         }
-      }
 
-      // Check all un-ACKed sent packets for timeouts
-      for (uint32_t i = 0; i < q->count; ++i) {
-        wp = &q->arr[get_arr_idx(q, i)];
-
-        // If packet timed out, resend all packets with higher seq num
-        if (time_ms() - wp->time_sent > DEFAULT_TIMEOUT) {
-          for (uint32_t j = i; j < q->count; ++j) {
-            wp = &q->arr[get_arr_idx(q, j)];
+        // This packet is not ACKed. Check all for timeouts.
+        for (uint32_t i = 0; i < q->count; ++i) {
+          wp = &q->arr[get_arr_idx(q, i)];
+          if (time_ms() - wp->time_sent >= DEFAULT_TIMEOUT) {
             sendto(sockfd, wp->packet, get_plen((cmu_tcp_header_t *)wp), 0,
                    (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
             wp->time_sent = time_ms();
           }
-          break;
         }
+
+        // Stay in this loop if there are no more packets to send
+        if (buf_len != 0) break;
       }
     }
   }
@@ -450,6 +450,7 @@ void tcp_handshake(cmu_socket_t *sock) {
       }
     }
   }
+  printf("HANDSHAKE DONE\n");
 }
 
 /************************************************************************
