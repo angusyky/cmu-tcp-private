@@ -2,14 +2,14 @@
 
 #include <stdio.h>
 
-window_packet_t *front(queue_t *q) {
+window_slot_t *front(queue_t *q) {
   if (q->count == 0) {
     return NULL;
   }
   return &q->arr[q->head];
 }
 
-window_packet_t *back(queue_t *q) {
+window_slot_t *back(queue_t *q) {
   if (q->count == 0) {
     return NULL;
   }
@@ -17,16 +17,17 @@ window_packet_t *back(queue_t *q) {
   return &q->arr[tail_idx];
 }
 
-int enqueue(queue_t *q, uint8_t *packet, uint32_t seq, uint32_t time_sent) {
+int enqueue(queue_t *q, uint8_t *packet, uint32_t seq_start, uint32_t seq_end,
+            uint32_t time_sent) {
   uint32_t new_idx = (q->head + q->count) % N_ITEMS;
   if (q->count == N_ITEMS) {
     printf("Queue full: %d / %d\n", q->count, N_ITEMS);
     return -1;
   } else {
     q->count++;
-    window_packet_t *new_packet = &q->arr[new_idx];
+    window_slot_t *new_packet = &q->arr[new_idx];
     new_packet->packet = packet;
-    new_packet->seq_num = seq;
+    new_packet->seq_start = seq_start;
     new_packet->time_sent = time_sent;
     return 0;
   }

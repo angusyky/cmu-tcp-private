@@ -32,8 +32,19 @@ typedef struct {
   uint32_t next_seq_expected;
   uint32_t last_ack_received;
   uint32_t highest_byte_sent;
+  uint32_t dup_ack_count;
+  uint32_t recv_size;
+  uint32_t my_size;
+  uint32_t ssthresh;
+  uint32_t cwnd;
   queue_t sent_queue;
 } window_t;
+
+typedef enum {
+  SLOW_START = 0,
+  FAST_RECOVERY = 1,
+  CONGESTION_AVOIDANCE = 2,
+} tcp_reno_state_t;
 
 typedef enum {
   CLOSED = 0,
@@ -71,6 +82,7 @@ typedef struct {
   int dying;
   pthread_mutex_t death_lock;
   window_t window;
+  tcp_reno_state_t reno_state;
   tcp_handshake_state_t handshake_state;
 } cmu_socket_t;
 

@@ -55,6 +55,12 @@ int cmu_socket(cmu_socket_t *sock, const cmu_socket_type_t socket_type,
   sock->window.next_seq_expected = 0;
   sock->window.sent_queue.head = 0;
   sock->window.sent_queue.count = 0;
+  sock->window.dup_ack_count = -1;
+  sock->window.recv_size = WINDOW_INITIAL_WINDOW_SIZE;
+  sock->window.my_size = WINDOW_INITIAL_WINDOW_SIZE;
+  sock->window.ssthresh = WINDOW_INITIAL_SSTHRESH;
+  sock->window.cwnd = MSS;
+  sock->reno_state = SLOW_START;
 
   if (pthread_cond_init(&sock->wait_cond, NULL) != 0) {
     perror("ERROR condition variable not set\n");

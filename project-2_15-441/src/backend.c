@@ -29,7 +29,7 @@
 #include "cmu_tcp.h"
 
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
-#define PRINT_DBG false
+#define PRINT_DBG true
 
 /**
  * Create simple packet with no payload (for handshake and listener ACKs)
@@ -40,7 +40,7 @@ uint8_t *create_simple_packet(cmu_socket_t *sock, uint32_t seq, uint32_t ack,
   uint16_t dst = ntohs(sock->conn.sin_port);
   uint16_t hlen = sizeof(cmu_tcp_header_t);
   uint16_t plen = hlen;
-  uint16_t adv_window = 1;
+  uint16_t adv_window = sock->window.my_size;
   uint16_t payload_len = 0;
   uint8_t *payload = NULL;
   uint16_t ext_len = 0;
@@ -58,7 +58,7 @@ uint8_t *create_data_packet(cmu_socket_t *sock, uint32_t seq, uint32_t ack,
   uint16_t dst = ntohs(sock->conn.sin_port);
   uint16_t hlen = sizeof(cmu_tcp_header_t);
   uint16_t plen = hlen + payload_len;
-  uint16_t adv_window = 1;
+  uint16_t adv_window = sock->window.my_size;
   uint16_t ext_len = 0;
   uint8_t *ext_data = NULL;
   uint8_t flags = ACK_FLAG_MASK;
@@ -171,10 +171,18 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
       uint32_t recv_ack = get_ack(hdr);
       if (after(recv_ack, sock->window.last_ack_received)) {
         sock->window.last_ack_received = recv_ack;
+        sock->window.dup_ack_count = -1;
       }
 
-      // Ignore handshake / non-data ACKs.
+      // Handshake / non-data ACKs.
       if (get_plen(hdr) == get_hlen(hdr)) {
+        if (recv_ack == sock->window.last_ack_received) {
+          ++sock->window.dup_ack_count;
+          if (sock->window.dup_ack_count == 3) {
+            // Fast recovery
+            sock->reno_state = FAST_RECOVERY;
+          }
+        }
         break;
       }
 
@@ -287,47 +295,61 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
       // Find out how big next packet is
       uint16_t payload_len = MIN((uint32_t)buf_len, (uint32_t)MSS);
       uint32_t new_highest_byte = sock->window.highest_byte_sent + payload_len;
-      uint32_t window_max = sock->window.last_ack_received + CP1_WINDOW_SIZE;
+      uint32_t window_size = MIN(sock->window.cwnd, sock->window.recv_size);
+      uint32_t window_max = sock->window.last_ack_received + window_size;
+
+      // Send packet if there is space
       if (before(new_highest_byte, window_max)) {
-        // Send packet
         uint32_t seq = sock->window.highest_byte_sent + 1;
         uint32_t ack = sock->window.next_seq_expected;
         msg = create_data_packet(sock, seq, ack, payload_len, data_offset);
         sendto(sockfd, msg, sizeof(cmu_tcp_header_t) + payload_len, 0,
                (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
+        print_packet(msg, false);
 
         // Update data structures
         data_offset += payload_len;
         buf_len -= payload_len;
         sock->window.highest_byte_sent = new_highest_byte;
-        enqueue(q, msg, seq, time_ms());
+        enqueue(q, msg, seq, new_highest_byte, time_ms());
       }
 
       // Check all sent packets for ACKs so that we can advance the window.
-      window_packet_t *wp;
-      while ((wp = front(q)) != NULL) {
+      window_slot_t *slot;
+      while ((slot = front(q)) != NULL) {
         check_for_data(sock, NO_WAIT);
 
         // This front packet is ACKed. Remove from queue.
-        if (has_been_acked(sock, wp->seq_num)) {
-          free(wp->packet);
+        if (has_been_acked(sock, slot->seq_start)) {
+          free(slot->packet);
           dequeue(q);
           continue;
         }
 
         // This front packet is not ACKed. Check for timeouts.
         for (uint32_t i = 0; i < q->count; ++i) {
-          wp = &q->arr[get_arr_idx(q, i)];
-          if (time_ms() - wp->time_sent >= DEFAULT_TIMEOUT) {
-            sendto(sockfd, wp->packet, get_plen((cmu_tcp_header_t *)wp->packet),
-                   0, (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
-            wp->time_sent = time_ms();
+          slot = &q->arr[get_arr_idx(q, i)];
+
+          // If some packet is out of max, we are done with resending
+          if (before(window_max, slot->seq_end)) {
+            break;
+          }
+
+          // Check timeout.
+          if (time_ms() - slot->time_sent >= DEFAULT_TIMEOUT) {
+            sendto(sockfd, slot->packet,
+                   get_plen((cmu_tcp_header_t *)slot->packet), 0,
+                   (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
+            print_packet(slot->packet, false);
+            slot->time_sent = time_ms();
           }
         }
 
-        // Stay in this loop if there are no more packets to send
+        // Drain queue in this while loop if there are no more packets to send
         if (buf_len != 0) break;
       }
+
+      // HERE: Change CWND depending on TCP state
     }
   }
 }
@@ -512,7 +534,7 @@ void print_queue(queue_t *q) {
   printf("Queue (HEAD: %d, COUNT: %d)\n", q->head, q->count);
   printf("[\n");
   for (uint32_t i = 0; i < q->count; ++i) {
-    window_packet_t *wp = &q->arr[get_arr_idx(q, i)];
+    window_slot_t *wp = &q->arr[get_arr_idx(q, i)];
     printf("(time_sent: %d, plen) ", wp->time_sent);
     print_packet(wp->packet, false);
     printf("\n");
