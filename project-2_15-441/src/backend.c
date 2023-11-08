@@ -29,7 +29,7 @@
 #include "cmu_tcp.h"
 
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
-#define PRINT_DBG false
+#define PRINT_DBG true
 
 /**
  * Create simple packet with no payload (for handshake and listener ACKs)
@@ -189,6 +189,7 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
 
       // Handle handshake / non-data ACKs.
       if (get_plen(hdr) == get_hlen(hdr)) {
+        // Record receiver advertised window
         sock->window.recv_size = get_advertised_window(hdr);
 
         // New ACK received, record it and increase CWND
@@ -233,7 +234,7 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
                 sock->window.ssthresh = sock->window.cwnd / 2;
                 sock->window.cwnd = sock->window.ssthresh + 3 * MSS;
                 sock->reno_state = FAST_RECOVERY;
-                sock->retransmit = true;
+                retransmit(sock, sock->window.last_ack_received);
               }
               break;
             case FAST_RECOVERY:
@@ -356,16 +357,10 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
   window_slot_t *slot;
 
   while (buf_len != 0 || q->count > 0) {
-    sock->retransmit = false;
+
     check_for_data(sock, NO_WAIT);
 
-    // Retransmit missing segment due to triple dup.
-    if (sock->retransmit) {
-      retransmit(sock, sock->window.last_ack_received);
-      continue;
-    }
-
-    // Otherwise, check for timeout.
+    // Check for timeout.
     uint32_t w_size = MIN(sock->window.cwnd, (uint32_t)sock->window.recv_size);
     uint32_t w_max = sock->window.last_ack_received + w_size;
     for (uint32_t i = 0; i < q->count; ++i) {

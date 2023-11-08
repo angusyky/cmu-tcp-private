@@ -85,7 +85,6 @@ typedef struct {
   window_t window;
   tcp_reno_state_t reno_state;
   tcp_handshake_state_t handshake_state;
-  bool retransmit;
 } cmu_socket_t;
 
 /*
