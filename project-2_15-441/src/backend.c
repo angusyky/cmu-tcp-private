@@ -203,8 +203,7 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
           sock->window.last_ack_received = recv_ack;
           switch (sock->reno_state) {
             case SLOW_START:
-              sock->window.cwnd = MIN(sock->window.cwnd + MSS,
-                                      (uint32_t)sock->window.recv_size);
+              sock->window.cwnd = sock->window.cwnd + MSS;
               sock->window.dup_ack_count = 0;
               if (sock->window.cwnd >= sock->window.ssthresh) {
                 sock->reno_state = CONGESTION_AVOIDANCE;
@@ -213,8 +212,7 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
             case CONGESTION_AVOIDANCE:
               sock->window.dup_ack_count = 0;
               sock->window.cwnd =
-                  MIN(sock->window.cwnd + ((MSS * MSS) / sock->window.cwnd),
-                      (uint32_t)sock->window.recv_size);
+                  sock->window.cwnd + ((MSS * MSS) / sock->window.cwnd);
               break;
             case FAST_RECOVERY:
               sock->window.cwnd = sock->window.ssthresh;
@@ -241,8 +239,7 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
               ++sock->window.dup_ack_count;
               if (sock->window.dup_ack_count == 3) {
                 sock->window.ssthresh = sock->window.cwnd / 2;
-                sock->window.cwnd = MIN(sock->window.ssthresh + 3 * MSS,
-                                        (uint32_t)sock->window.recv_size);
+                sock->window.cwnd = sock->window.ssthresh + 3 * MSS;
                 sock->reno_state = FAST_RECOVERY;
                 retransmit(sock, sock->window.last_ack_received);
               }
@@ -370,15 +367,15 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
     check_for_data(sock, NO_WAIT);
 
     // Check for timeout.
-    uint32_t w_max = sock->window.last_ack_received + sock->window.cwnd;
+    uint32_t w_size = MIN((uint32_t)sock->window.recv_size, sock->window.cwnd);
+    uint32_t w_max = sock->window.last_ack_received + w_size;
     for (uint32_t i = 0; i < q->count; ++i) {
       slot = &q->arr[get_arr_idx(q, i)];
       if (!before(slot->seq_end, w_max)) break;
       if (time_ms() - slot->time_sent >= DEFAULT_TIMEOUT) {
         sock->reno_state = SLOW_START;
         sock->window.ssthresh = sock->window.cwnd / 2;
-        sock->window.cwnd =
-            MIN(WINDOW_INITIAL_WINDOW_SIZE, (uint32_t)sock->window.recv_size);
+        sock->window.cwnd = MSS;
         sock->window.dup_ack_count = 0;
         retransmit(sock, slot->seq_start);
         break;
@@ -388,7 +385,8 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
     if (buf_len == 0) continue;
 
     // Transmit new segments as allowed
-    w_max = sock->window.last_ack_received + sock->window.cwnd;
+    w_size = MIN((uint32_t)sock->window.recv_size, sock->window.cwnd);
+    w_max = sock->window.last_ack_received + w_size;
     uint16_t payload_len = MIN((uint32_t)buf_len, (uint32_t)MSS);
     uint32_t new_highest_byte = sock->window.highest_byte_sent + payload_len;
 
