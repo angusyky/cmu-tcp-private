@@ -134,7 +134,7 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
   if (!validate_packet(sock, pkt)) return;
   print_packet(pkt, true);
 
-  sock->window.recv_size = hdr->advertised_window;
+  sock->window.recv_size = get_advertised_window(hdr);
 
   switch (recv_flags) {
     case SYN_FLAG_MASK: {
@@ -236,6 +236,12 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
         sock->received_len += recv_payload_len;
       }
 
+      // Update window if application is not consuming data
+      if (sock->received_len == sock->window.prev_received_len) {
+        sock->window.my_size -= 1000;
+      }
+      sock->window.prev_received_len = sock->received_len;
+
       // Respond with basic ACK
       uint32_t seq = sock->window.last_ack_received;
       uint32_t ack = sock->window.next_seq_expected;
@@ -251,6 +257,7 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
     default:
       return;
   }
+  print_state(sock);
 }
 
 /**
@@ -568,7 +575,7 @@ void print_state(cmu_socket_t *sock) {
   printf(" CWND: %d ", sock->window.cwnd);
   printf(" DUP_ACK_COUNT: %d ", sock->window.dup_ack_count);
   printf(" SSTHRESH: %d ", sock->window.ssthresh);
-  printf(" RECV_WINDOW: %d ", sock->window.recv_size);
+  printf(" RECV_WINDOW: %hu ", sock->window.recv_size);
   //  printf(" SOCK_RECV_LEN: %d ", sock->received_len);
   //  printf(" SOCK_SEND_LEN: %d ", sock->sending_len);
   printf("]\n");
