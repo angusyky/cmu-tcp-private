@@ -28,6 +28,7 @@ int enqueue(queue_t *q, uint8_t *packet, uint32_t seq_start, uint32_t seq_end,
     window_slot_t *new_packet = &q->arr[new_idx];
     new_packet->packet = packet;
     new_packet->seq_start = seq_start;
+    new_packet->seq_end = seq_end;
     new_packet->time_sent = time_sent;
     return 0;
   }

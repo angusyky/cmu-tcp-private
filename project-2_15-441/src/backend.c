@@ -365,8 +365,11 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
     }
 
     // Otherwise, check for timeout.
+    uint32_t w_size = MIN(sock->window.cwnd, (uint32_t)sock->window.recv_size);
+    uint32_t w_max = sock->window.last_ack_received + w_size;
     for (uint32_t i = 0; i < q->count; ++i) {
       slot = &q->arr[get_arr_idx(q, i)];
+      if (!before(slot->seq_end, w_max)) break;
       if (time_ms() - slot->time_sent >= DEFAULT_TIMEOUT) {
         sock->reno_state = SLOW_START;
         sock->window.ssthresh = sock->window.cwnd / 2;
@@ -380,13 +383,13 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
     if (buf_len == 0) continue;
 
     // Transmit new segments as allowed
+    w_size = MIN(sock->window.cwnd, (uint32_t)sock->window.recv_size);
+    w_max = sock->window.last_ack_received + w_size;
     uint16_t payload_len = MIN((uint32_t)buf_len, (uint32_t)MSS);
     uint32_t new_highest_byte = sock->window.highest_byte_sent + payload_len;
-    uint32_t window_size = MIN(sock->window.cwnd, sock->window.recv_size);
-    uint32_t window_max = sock->window.last_ack_received + window_size;
 
     // Send packet if there is space
-    while (buf_len > 0 && before(new_highest_byte, window_max)) {
+    while (buf_len > 0 && before(new_highest_byte, w_max)) {
       uint32_t seq = sock->window.highest_byte_sent + 1;
       uint32_t ack = sock->window.next_seq_expected;
       msg = create_data_packet(sock, seq, ack, payload_len, data_offset);
