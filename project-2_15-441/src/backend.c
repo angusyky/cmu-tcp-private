@@ -40,7 +40,9 @@ uint8_t *create_simple_packet(cmu_socket_t *sock, uint32_t seq, uint32_t ack,
   uint16_t dst = ntohs(sock->conn.sin_port);
   uint16_t hlen = sizeof(cmu_tcp_header_t);
   uint16_t plen = hlen;
-  uint16_t adv_window = sock->window.my_size;
+  uint16_t adv_window =
+      MAX_NETWORK_BUFFER -
+      ((sock->window.next_seq_expected - 1) - sock->window.last_byte_read);
   uint16_t payload_len = 0;
   uint8_t *payload = NULL;
   uint16_t ext_len = 0;
@@ -58,7 +60,9 @@ uint8_t *create_data_packet(cmu_socket_t *sock, uint32_t seq, uint32_t ack,
   uint16_t dst = ntohs(sock->conn.sin_port);
   uint16_t hlen = sizeof(cmu_tcp_header_t);
   uint16_t plen = hlen + payload_len;
-  uint16_t adv_window = sock->window.my_size;
+  uint16_t adv_window =
+      MAX_NETWORK_BUFFER -
+      ((sock->window.next_seq_expected - 1) - sock->window.last_byte_read);
   uint16_t ext_len = 0;
   uint8_t *ext_data = NULL;
   uint8_t flags = ACK_FLAG_MASK;
@@ -156,6 +160,7 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
     case SYN_FLAG_MASK: {
       sock->handshake_state = SYN_RECV;
       sock->window.next_seq_expected = get_seq(hdr) + 1;
+      sock->window.last_byte_read = get_seq(hdr);
       break;
     }
 
@@ -169,6 +174,7 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
       // Initialize sequence number from Listener
       if (sock->handshake_state != ESTABLISHED) {
         sock->window.next_seq_expected = get_seq(hdr) + 1;
+        sock->window.last_byte_read = get_seq(hdr);
       }
 
       // Respond with basic ACK
