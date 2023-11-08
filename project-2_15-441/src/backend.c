@@ -152,8 +152,6 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
   if (!validate_packet(sock, pkt)) return;
   print_packet(pkt, true);
 
-  sock->window.recv_size = get_advertised_window(hdr);
-
   switch (recv_flags) {
     case SYN_FLAG_MASK: {
       sock->handshake_state = SYN_RECV;
@@ -191,6 +189,8 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
 
       // Handle handshake / non-data ACKs.
       if (get_plen(hdr) == get_hlen(hdr)) {
+        sock->window.recv_size = get_advertised_window(hdr);
+
         // New ACK received, record it and increase CWND
         if (after(recv_ack, sock->window.last_ack_received)) {
           sock->window.last_ack_received = recv_ack;
@@ -279,6 +279,7 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
     default:
       return;
   }
+  print_state(sock);
 }
 
 /**
