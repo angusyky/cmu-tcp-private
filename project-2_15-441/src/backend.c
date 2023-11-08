@@ -29,7 +29,7 @@
 #include "cmu_tcp.h"
 
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
-#define PRINT_DBG true
+#define PRINT_DBG false
 
 /**
  * Create simple packet with no payload (for handshake and listener ACKs)
@@ -64,6 +64,24 @@ uint8_t *create_data_packet(cmu_socket_t *sock, uint32_t seq, uint32_t ack,
   uint8_t flags = ACK_FLAG_MASK;
   return create_packet(src, dst, seq, ack, hlen, plen, flags, adv_window,
                        ext_len, ext_data, payload, payload_len);
+}
+
+/**
+ * Retransmit missing segment
+ */
+void retransmit(cmu_socket_t *sock, uint32_t seq_start) {
+  queue_t *q = &sock->window.sent_queue;
+  for (uint32_t i = 0; i < q->count; ++i) {
+    window_slot_t *slot = &q->arr[get_arr_idx(q, i)];
+    if (slot->seq_start == seq_start) {
+      sendto(sock->socket, slot->packet,
+             get_plen((cmu_tcp_header_t *)slot->packet), 0,
+             (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
+      print_packet(slot->packet, false);
+      slot->time_sent = time_ms();
+      return;
+    }
+  }
 }
 
 /**
@@ -193,10 +211,20 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
               sock->reno_state = CONGESTION_AVOIDANCE;
               break;
           }
-          break;
+          // Clear out ACKed packets from our linked list
+          window_slot_t *slot;
+          queue_t *q = &sock->window.sent_queue;
+          while ((slot = front(q)) != NULL) {
+            if (has_been_acked(sock, slot->seq_start)) {
+              free(slot->packet);
+              dequeue(q);
+            } else {
+              break;
+            }
+          }
         }
         // Dup ACK received, update cwnd as necessary
-        if (recv_ack == sock->window.last_ack_received) {
+        else if (recv_ack == sock->window.last_ack_received) {
           switch (sock->reno_state) {
             case SLOW_START:
             case CONGESTION_AVOIDANCE:
@@ -212,8 +240,8 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
               sock->window.cwnd += MSS;
               break;
           }
-          break;
         }
+        break;
       }
 
       // Handle DATA ACKs.
@@ -236,12 +264,6 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
         sock->received_len += recv_payload_len;
       }
 
-      // Update window if application is not consuming data
-      if (sock->received_len == sock->window.prev_received_len) {
-        sock->window.my_size -= 1000;
-      }
-      sock->window.prev_received_len = sock->received_len;
-
       // Respond with basic ACK
       uint32_t seq = sock->window.last_ack_received;
       uint32_t ack = sock->window.next_seq_expected;
@@ -257,7 +279,6 @@ void handle_message(cmu_socket_t *sock, uint8_t *pkt) {
     default:
       return;
   }
-  print_state(sock);
 }
 
 /**
@@ -331,16 +352,41 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
   uint8_t *data_offset = data;
   int sockfd = sock->socket;
   queue_t *q = &sock->window.sent_queue;
+  window_slot_t *slot;
 
-  while (buf_len != 0) {
-    // Find out how big next packet is
+  while (buf_len != 0 || q->count > 0) {
+    sock->retransmit = false;
+    check_for_data(sock, NO_WAIT);
+
+    // Retransmit missing segment due to triple dup.
+    if (sock->retransmit) {
+      retransmit(sock, sock->window.last_ack_received);
+      continue;
+    }
+
+    // Otherwise, check for timeout.
+    for (uint32_t i = 0; i < q->count; ++i) {
+      slot = &q->arr[get_arr_idx(q, i)];
+      if (time_ms() - slot->time_sent >= DEFAULT_TIMEOUT) {
+        sock->reno_state = SLOW_START;
+        sock->window.ssthresh = sock->window.cwnd / 2;
+        sock->window.cwnd = WINDOW_INITIAL_WINDOW_SIZE;
+        sock->window.dup_ack_count = 0;
+        retransmit(sock, slot->seq_start);
+        break;
+      }
+    }
+
+    if (buf_len == 0) continue;
+
+    // Transmit new segments as allowed
     uint16_t payload_len = MIN((uint32_t)buf_len, (uint32_t)MSS);
     uint32_t new_highest_byte = sock->window.highest_byte_sent + payload_len;
     uint32_t window_size = MIN(sock->window.cwnd, sock->window.recv_size);
     uint32_t window_max = sock->window.last_ack_received + window_size;
 
     // Send packet if there is space
-    if (before(new_highest_byte, window_max)) {
+    while (buf_len > 0 && before(new_highest_byte, window_max)) {
       uint32_t seq = sock->window.highest_byte_sent + 1;
       uint32_t ack = sock->window.next_seq_expected;
       msg = create_data_packet(sock, seq, ack, payload_len, data_offset);
@@ -353,54 +399,10 @@ void single_send(cmu_socket_t *sock, uint8_t *data, int buf_len) {
       buf_len -= payload_len;
       sock->window.highest_byte_sent = new_highest_byte;
       enqueue(q, msg, seq, new_highest_byte, time_ms());
-    }
 
-    // Check all sent packets for ACKs so that we can advance the window.
-    window_slot_t *slot;
-    while ((slot = front(q)) != NULL) {
-      check_for_data(sock, NO_WAIT);
-
-      // This front packet is ACKed.
-      if (has_been_acked(sock, slot->seq_start)) {
-        free(slot->packet);
-        dequeue(q);
-        continue;
-      }
-
-      // This front packet is not ACKed. Check the rest for timeout.
-      for (uint32_t i = 0; i < q->count; ++i) {
-        slot = &q->arr[get_arr_idx(q, i)];
-        if (time_ms() - slot->time_sent >= DEFAULT_TIMEOUT) {
-          sock->reno_state = SLOW_START;
-          sock->window.ssthresh = sock->window.cwnd / 2;
-          sock->window.cwnd = MSS;
-          sock->window.dup_ack_count = 0;
-          sock->retransmit = true;
-          break;
-        }
-      }
-
-      // Retransmit if needed
-      if (sock->retransmit) {
-        window_size = MIN(sock->window.cwnd, sock->window.recv_size);
-        window_max = sock->window.last_ack_received + window_size;
-        // Retransmit all packets until we hit the limit
-        for (uint32_t i = 0; i < q->count; ++i) {
-          slot = &q->arr[get_arr_idx(q, i)];
-          if (before(window_max, slot->seq_end)) {
-            break;
-          }
-          sendto(sockfd, slot->packet,
-                 get_plen((cmu_tcp_header_t *)slot->packet), 0,
-                 (struct sockaddr *)&(sock->conn), sizeof(sock->conn));
-          print_packet(slot->packet, false);
-          slot->time_sent = time_ms();
-        }
-        sock->retransmit = false;
-      }
-
-      // Drain queue in this while loop if there are no more packets to send
-      if (buf_len != 0) break;
+      // Try next segment
+      payload_len = MIN((uint32_t)buf_len, (uint32_t)MSS);
+      new_highest_byte = sock->window.highest_byte_sent + payload_len;
     }
   }
 }
@@ -520,7 +522,6 @@ void tcp_handshake(cmu_socket_t *sock) {
       }
     }
   }
-  printf("HANDSHAKE DONE\n");
 }
 
 /************************************************************************
@@ -568,16 +569,19 @@ void print_packet(uint8_t *packet, bool is_recv) {
 void print_state(cmu_socket_t *sock) {
   if (!PRINT_DBG) return;
   printf("[");
-  printf(" LAST_ACK: %d ", sock->window.last_ack_received);
-  printf(" NEXT_SEQ: %d ", sock->window.next_seq_expected);
-  printf(" HIGHEST_BYTE_SENT: %d ", sock->window.highest_byte_sent);
+  //  printf(" LAST_ACK: %d ", sock->window.last_ack_received);
+  //  printf(" NEXT_SEQ: %d ", sock->window.next_seq_expected);
+  //  printf(" HIGHEST_BYTE_SENT: %d ", sock->window.highest_byte_sent);
   printf(" TCP_STATE: %d ", sock->reno_state);
   printf(" CWND: %d ", sock->window.cwnd);
-  printf(" DUP_ACK_COUNT: %d ", sock->window.dup_ack_count);
+  //  printf(" DUP_ACK_COUNT: %d ", sock->window.dup_ack_count);
   printf(" SSTHRESH: %d ", sock->window.ssthresh);
+  printf(" MY_WINDOW: %hu ", sock->window.my_size);
   printf(" RECV_WINDOW: %hu ", sock->window.recv_size);
+  printf(" SENDING_WINDOW: %hu ",
+         MIN(sock->window.recv_size, sock->window.cwnd));
   //  printf(" SOCK_RECV_LEN: %d ", sock->received_len);
-  //  printf(" SOCK_SEND_LEN: %d ", sock->sending_len);
+  printf(" SOCK_SEND_LEN: %d ", sock->sending_len);
   printf("]\n");
 }
 
