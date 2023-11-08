@@ -583,7 +583,6 @@ void print_state(cmu_socket_t *sock) {
   printf(" CWND: %d ", sock->window.cwnd);
   //  printf(" DUP_ACK_COUNT: %d ", sock->window.dup_ack_count);
   printf(" SSTHRESH: %d ", sock->window.ssthresh);
-  printf(" MY_WINDOW: %hu ", sock->window.my_size);
   printf(" RECV_WINDOW: %hu ", sock->window.recv_size);
   printf(" SENDING_WINDOW: %hu ",
          MIN(sock->window.recv_size, sock->window.cwnd));

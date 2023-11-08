@@ -35,7 +35,6 @@ typedef struct {
   uint32_t last_byte_read;
   uint32_t dup_ack_count;
   uint16_t recv_size;
-  uint16_t my_size;
   uint32_t ssthresh;
   uint32_t cwnd;
   int prev_received_len;

@@ -59,7 +59,6 @@ int cmu_socket(cmu_socket_t *sock, const cmu_socket_type_t socket_type,
   sock->window.dup_ack_count = 0;
   sock->window.prev_received_len = 0;
   sock->window.recv_size = MAX_NETWORK_BUFFER;
-  sock->window.my_size = MAX_NETWORK_BUFFER;
   sock->window.ssthresh = WINDOW_INITIAL_SSTHRESH;
   sock->window.cwnd = WINDOW_INITIAL_WINDOW_SIZE;
   sock->reno_state = SLOW_START;
