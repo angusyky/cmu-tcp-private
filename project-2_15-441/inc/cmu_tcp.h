@@ -32,12 +32,10 @@ typedef struct {
   uint32_t next_seq_expected;
   uint32_t last_ack_received;
   uint32_t highest_byte_sent;
-  uint32_t last_byte_read;
   uint32_t dup_ack_count;
   uint16_t recv_size;
   uint32_t ssthresh;
   uint32_t cwnd;
-  int prev_received_len;
   queue_t sent_queue;
 } window_t;
 

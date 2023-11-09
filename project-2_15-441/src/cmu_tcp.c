@@ -53,11 +53,9 @@ int cmu_socket(cmu_socket_t *sock, const cmu_socket_type_t socket_type,
   // other side of the connection.
   sock->window.last_ack_received = 0;
   sock->window.next_seq_expected = 0;
-  sock->window.last_byte_read = 0;
   sock->window.sent_queue.head = 0;
   sock->window.sent_queue.count = 0;
   sock->window.dup_ack_count = 0;
-  sock->window.prev_received_len = 0;
   sock->window.recv_size = MAX_NETWORK_BUFFER;
   sock->window.ssthresh = WINDOW_INITIAL_SSTHRESH;
   sock->window.cwnd = WINDOW_INITIAL_WINDOW_SIZE;
@@ -178,7 +176,6 @@ int cmu_read(cmu_socket_t *sock, void *buf, int length, cmu_read_mode_t flags) {
           sock->received_buf = NULL;
           sock->received_len = 0;
         }
-        sock->window.last_byte_read += read_len;
       }
       break;
     default:
