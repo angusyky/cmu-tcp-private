@@ -33,20 +33,23 @@ void functionality(cmu_socket_t *sock) {
   FILE *fp;
   int n;
 
-  n = cmu_read(sock, buf, BUF_SIZE, NO_FLAG);
-  printf("R: %s\n", buf);
-  printf("N: %d\n", n);
-  cmu_write(sock, "hi there", 9);
-  n = cmu_read(sock, buf, 200, NO_FLAG);
-  printf("R: %s\n", buf);
-  printf("N: %d\n", n);
-  cmu_write(sock, "https://www.youtube.com/watch?v=dQw4w9WgXcQ", 44);
-
-  sleep(1);
-  n = cmu_read(sock, buf, BUF_SIZE, NO_FLAG);
-  printf("N: %d\n", n);
+  //  n = cmu_read(sock, buf, BUF_SIZE, NO_FLAG);
+  //  printf("R: %s\n", buf);
+  //  printf("N: %d\n", n);
+  //  cmu_write(sock, "hi there", 9);
+  //  n = cmu_read(sock, buf, 200, NO_FLAG);
+  //  printf("R: %s\n", buf);
+  //  printf("N: %d\n", n);
+  //  cmu_write(sock, "https://www.youtube.com/watch?v=dQw4w9WgXcQ", 44);
+  //
+  //  sleep(1);
+  int counter = 0;
   fp = fopen("/tmp/file.c", "w");
-  fwrite(buf, 1, n, fp);
+  while ((n = cmu_read(sock, buf, BUF_SIZE, NO_FLAG)) > 0) {
+    fwrite(buf, 1, n, fp);
+    printf("Wrote %d bytes\n", n);
+    ++counter;
+  }
   fclose(fp);
 }
 
@@ -56,15 +59,12 @@ int main() {
   char *serverport;
   cmu_socket_t socket;
 
-  serverip = getenv("server15441");
-  if (!serverip) {
-    serverip = "10.0.1.1";
-  }
+  //  serverip = "172.31.40.111";
+  //  serverport = "15441";
+  //  portno = (uint16_t)atoi(serverport);
 
-  serverport = getenv("serverport15441");
-  if (!serverport) {
-    serverport = "15441";
-  }
+  serverip = "10.0.1.1";
+  serverport = "15441";
   portno = (uint16_t)atoi(serverport);
 
   if (cmu_socket(&socket, TCP_LISTENER, portno, serverip) < 0) {

@@ -18,32 +18,42 @@
 
 #include "cmu_tcp.h"
 
+/**
+ * Get time in ms
+ */
+uint32_t time_ms_c() {
+  struct timespec time;
+  timespec_get(&time, TIME_UTC);
+  return ((uint32_t)time.tv_sec) * 1000 + ((uint32_t)time.tv_nsec) / 1000000;
+}
+
 void functionality(cmu_socket_t *sock) {
   uint8_t buf[9898];
   int read;
   FILE *fp;
 
-  cmu_write(sock, "hi there", 8);
-  cmu_write(sock, " https://www.youtube.com/watch?v=dQw4w9WgXcQ", 44);
-  cmu_write(sock, " https://www.youtube.com/watch?v=Yb6dZ1IFlKc", 44);
-  cmu_write(sock, " https://www.youtube.com/watch?v=xvFZjo5PgG0", 44);
-  cmu_write(sock, " https://www.youtube.com/watch?v=8ybW48rKBME", 44);
-  cmu_write(sock, " https://www.youtube.com/watch?v=xfr64zoBTAQ", 45);
-  cmu_read(sock, buf, 200, NO_FLAG);
-
-  cmu_write(sock, "hi there", 9);
-  cmu_read(sock, buf, 200, NO_FLAG);
-  printf("R: %s\n", buf);
-
-  read = cmu_read(sock, buf, 200, NO_WAIT);
-  printf("Read: %d\n", read);
-
-  fp = fopen("/vagrant/project-2_15-441/src/cmu_tcp.c", "rb");
+  //  cmu_write(sock, "hi there", 8);
+  //  cmu_write(sock, " https://www.youtube.com/watch?v=dQw4w9WgXcQ", 44);
+  //  cmu_write(sock, " https://www.youtube.com/watch?v=Yb6dZ1IFlKc", 44);
+  //  cmu_write(sock, " https://www.youtube.com/watch?v=xvFZjo5PgG0", 44);
+  //  cmu_write(sock, " https://www.youtube.com/watch?v=8ybW48rKBME", 44);
+  //  cmu_write(sock, " https://www.youtube.com/watch?v=xfr64zoBTAQ", 45);
+  //  cmu_read(sock, buf, 200, NO_FLAG);
+  //
+  //  cmu_write(sock, "hi there", 9);
+  //  cmu_read(sock, buf, 200, NO_FLAG);
+  //  printf("R: %s\n", buf);
+  //
+  //  read = cmu_read(sock, buf, 200, NO_WAIT);
+  //  printf("Read: %d\n", read);
+  fp = fopen("/vagrant/project-2_15-441/src/sample.pdf", "rb");
+  uint32_t n_wrote = 0;
   read = 1;
   while (read > 0) {
     read = fread(buf, 1, 2000, fp);
     if (read > 0) {
       cmu_write(sock, buf, read);
+      n_wrote += read;
     }
   }
 }
@@ -54,26 +64,19 @@ int main() {
   char *serverport;
   cmu_socket_t socket;
 
-  serverip = getenv("server15441");
-  if (!serverip) {
-    serverip = "10.0.1.1";
-  }
-
-  serverport = getenv("serverport15441");
-  if (!serverport) {
-    serverport = "15441";
-  }
+  serverip = "10.0.1.1";
+  serverport = "15441";
   portno = (uint16_t)atoi(serverport);
 
   if (cmu_socket(&socket, TCP_INITIATOR, portno, serverip) < 0) {
     exit(EXIT_FAILURE);
   }
-
+  printf("Start: %zu\n", (size_t)time_ms_c());
   functionality(&socket);
 
   if (cmu_close(&socket) < 0) {
     exit(EXIT_FAILURE);
   }
-
+  printf("End: %zu\n", (size_t)time_ms_c());
   return EXIT_SUCCESS;
 }

@@ -29,7 +29,7 @@
 #include "cmu_tcp.h"
 
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
-#define PRINT_DBG true
+#define PRINT_DBG false
 
 /**
  * Create simple packet with no payload (for handshake and listener ACKs)
