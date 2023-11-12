@@ -59,11 +59,7 @@ int main() {
   char *serverport;
   cmu_socket_t socket;
 
-  //  serverip = "172.31.40.111";
-  //  serverport = "15441";
-  //  portno = (uint16_t)atoi(serverport);
-
-  serverip = "10.0.1.1";
+  serverip = "172.31.40.111";
   serverport = "15441";
   portno = (uint16_t)atoi(serverport);
 
